@@ -79,7 +79,7 @@ Continuing.
 
 通过 objdump 命令可以查看：
 ```
-$ objdump -p obj/kern/kernel                                                                                                           lab1 [882640d]
+$ objdump -p obj/kern/kernel                                                                                                   
 
 obj/kern/kernel:     file format elf32-i386
 
