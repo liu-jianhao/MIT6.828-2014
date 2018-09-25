@@ -1,4 +1,8 @@
 [实验一指导](https://pdos.csail.mit.edu/6.828/2014/labs/lab1/#Hand-In-Procedure)
+## 环境搭建
+环境搭建是最重要的一步，不然后面的实验会有很多莫名其妙的错误
+
+[环境搭建](https://zhuanlan.zhihu.com/p/36889298)
 
 ## 实验步骤
 1. 先按照指导，下载源码并编译链接
@@ -270,3 +274,241 @@ cprintf（“x =％dy =％d”，3）;
 
 #### 假设GCC更改了它的调用约定，以便它按声明顺序在堆栈上推送参数，以便最后推送最后一个参数。您将如何更改cprintf或其界面，以便仍然可以传递可变数量的参数？
 需要更改`va_start`以及`va_arg`两个宏的实现。
+
+### 练习9
+#### 确定内核初始化其堆栈的位置，以及堆栈所在内存的确切位置。内核如何为其堆栈保留空间？并且在这个保留区域的“结束”是堆栈指针初始化为指向？
+在`kern/entry.S`中找到初始化`ebp`和`esp`的语句：
+```
+# Clear the frame pointer register (EBP)
+# so that once we get into debugging C code,
+# stack backtraces will be terminated properly.
+movl	$0x0,%ebp			# nuke frame pointer
+
+# Set the stack pointer
+movl	$(bootstacktop),%esp
+```
+用gdb查看地址：
+```
+(gdb) b kern/entry.S:74
+Breakpoint 1 at 0xf010002f: file kern/entry.S, line 74.
+(gdb) c
+Continuing.
+The target architecture is assumed to be i386
+=> 0xf010002f <relocated>:	mov    $0x0,%ebp
+
+Breakpoint 1, relocated () at kern/entry.S:74
+74		movl	$0x0,%ebp			# nuke frame pointer
+(gdb) si
+=> 0xf0100034 <relocated+5>:	mov    $0xf0110000,%esp
+relocated () at kern/entry.S:77
+77		movl	$(bootstacktop),%esp
+```
+可以看出，栈顶在`0xf0110000`，然后在`kern/entry.S`中找到：
+```
+bootstack:
+	.space		KSTKSIZE
+```
+在`inc/memlayout.h`中找到以下定义：
+```
+// Kernel stack.
+#define KSTACKTOP	KERNBASE
+#define KSTKSIZE	(8*PGSIZE)   		// size of a kernel stack
+#define KSTKGAP		(8*PGSIZE)   		// size of a kernel stack guard
+```
+在`inc/mmu.h`中找到以下定义：
+```
+#define PGSIZE		4096		// bytes mapped by a page
+```
+可以看出，栈大小为32kB。
+
+由于栈是从内存高位向低位生长，所以堆栈指针指向的是高位。
+
+### 练习10
+#### 要熟悉x86上的C调用约定，`test_backtrace`在`obj/kern/kernel.asm`中找到函数的地址，在那里设置断点，并检查每次在内核启动后调用它时会发生什么。每个递归嵌套级别`test_backtrace`的堆栈中有多少32位字，这些字是什么？
+
+`test_backtrace`函数在`kern/init.c`里定义和使用
+```c
+// Test the stack backtrace function (lab 1 only)
+void
+test_backtrace(int x)
+{
+	cprintf("entering test_backtrace %d\n", x);
+	if (x > 0)
+		test_backtrace(x-1);
+	else
+		mon_backtrace(0, 0, 0);
+	cprintf("leaving test_backtrace %d\n", x);
+}
+```
+```c
+// Test the stack backtrace function (lab 1 only)
+test_backtrace(5);
+```
+开始调试：
+```
+(gdb) b *0xf0100076
+Breakpoint 1 at 0xf0100076: file kern/init.c, line 18.
+(gdb) c
+Continuing.
+The target architecture is assumed to be i386
+=> 0xf0100076 <test_backtrace+54>:	call   0xf010076e <mon_backtrace>
+Breakpoint 1, 0xf0100076 in test_backtrace (x=0) at kern/init.c:18
+18			mon_backtrace(0, 0, 0);
+(gdb) x/52x $esp
+0xf010ff20:	0x00000000	0x00000000	0x00000000	0x00000000
+0xf010ff30:	0xf01008ef	0x00000001	0xf010ff58	0xf0100068
+0xf010ff40:	0x00000000	0x00000001	0xf010ff78	0x00000000
+0xf010ff50:	0xf01008ef	0x00000002	0xf010ff78	0xf0100068
+0xf010ff60:	0x00000001	0x00000002	0xf010ff98	0x00000000
+0xf010ff70:	0xf01008ef	0x00000003	0xf010ff98	0xf0100068
+0xf010ff80:	0x00000002	0x00000003	0xf010ffb8	0x00000000
+0xf010ff90:	0xf01008ef	0x00000004	0xf010ffb8	0xf0100068
+0xf010ffa0:	0x00000003	0x00000004	0x00000000	0x00000000
+0xf010ffb0:	0x00000000	0x00000005	0xf010ffd8	0xf0100068
+0xf010ffc0:	0x00000004	0x00000005	0x00000000	0x00010094
+0xf010ffd0:	0x00010094	0x00010094	0xf010fff8	0xf01000d4
+0xf010ffe0:	0x00000005	0x00001aac	0x00000644	0x00000000
+0xf010fff0:	0x00000000	0x00000000	0x00000000	0xf010003e
+```
+因为栈向下生长，从后往前看即为执行顺序。 在调用函数时，对栈需要进行以下操作：
+1. 将参数由右向左压入栈
+2. 将返回地址 (eip中的内容) 入栈，在 call 指令执行
+3. 将上一个函数的 ebp 入栈
+4. 将 ebx 入栈，保护寄存器状态
+5. 在栈上开辟一个空间存储局部变量
+可以看出，第二列出现的`0x00000005`到`0x00000000`都是参数。 在参数前一个存储的是返回地址，`0xf0100068`出现了多次，是`test_backtrace`递归过程中的返回地址。而`0xf01000d4`出现仅一次，是`i386_init`函数中的返回地址。可以通过查看`obj/kern/kernel.asm`证明。
+
+### 练习11
+#### 实现上面指定的回溯函数。使用与示例中相同的格式，否则将使评分脚本混淆。如果您认为它正常工作，请运行make grade以查看其输出是否符合我们的评分脚本所期望的内容，如果不符合则修复它。 在您交付Lab 1代码后，欢迎您以任何方式更改回溯功能的输出格式。
+输出格式为：
+```
+Stack backtrace:
+  ebp f0109e58  eip f0100a62  args 00000001 f0109e80 f0109e98 f0100ed2 00000031
+  ebp f0109ed8  eip f01000d6  args 00000000 00000000 f0100058 f0109f28 00000061
+  ...
+```
+
+主要是根据提示来改写`kern/monitor.c`，要点：
+1. 利用read_ebp() 函数获取当前ebp值
+2. 利用 ebp 的初始值0判断是否停止
+3. 利用数组指针运算来获取 eip 以及 args
+```c
+int
+mon_backtrace(int argc, char **argv, struct Trapframe *tf)
+{
+	// Your code here.
+	uint32_t ebp, *p;
+	ebp = read_ebp();
+	while(ebp != 0)
+	{
+		p = (uint32_t*)ebp;
+		cprintf("ebp %x eip %x args %08x %08x %08x %08x %08x\n", ebp, p[1], p[2], p[3], p[4], p[5], p[6]);
+		ebp = *p;
+	}
+	return 0;
+}
+```
+
+### 练习12
+#### 修改堆栈回溯功能，为每个eip显示与该eip对应的函数名称，源文件名和行号。
+输出格式为：
+```
+K> backtrace
+Stack backtrace:
+  ebp f010ff78  eip f01008ae  args 00000001 f010ff8c 00000000 f0110580 00000000
+         kern/monitor.c:143: monitor+106
+  ebp f010ffd8  eip f0100193  args 00000000 00001aac 00000660 00000000 00000000
+         kern/init.c:49: i386_init+59
+  ebp f010fff8  eip f010003d  args 00000000 00000000 0000ffff 10cf9a00 0000ffff
+         kern/entry.S:70: <unknown>+0
+K>
+```
+
+
+首先是完成二分查找`stab`表确定行号的函数，在`kern/kdebug.c`的173行处 根据注释的提示基本就能完成：
+```c
+// Search within [lline, rline] for the line number stab.
+// If found, set info->eip_line to the right line number.
+// If not found, return -1.
+//
+// Hint:
+//	There's a particular stabs type used for line numbers.
+//	Look at the STABS documentation and <inc/stab.h> to find
+//	which one.
+// Your code here.
+stab_binsearch(stabs, &lline, &rline, N_SLINE, addr);
+if(lline <= rline)
+{
+	info->eip_line = stabs[lline].n_desc;
+}
+else
+{
+	return -1;
+}
+```
+此后是添加命令，在 kern/monitor.c 的第27行：
+```c
+static struct Command commands[] = {
+	{ "help", "Display this list of commands", mon_help },
+	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
+	{ "backtrace", "Display information about the backtrace", mon_backtrace },
+};
+```
+最后是添加`backtrace`的输出信息，将`kern/monitor.c`的`mon_backtrace`函数改为：
+```c
+int
+mon_backtrace(int argc, char **argv, struct Trapframe *tf)
+{
+	// Your code here.
+	uint32_t ebp, *p;
+	struct Eipdebuginfo eip_info;
+	ebp = read_ebp();
+	while(ebp != 0)
+	{
+		p = (uint32_t*)ebp;
+		cprintf("ebp %x eip %x args %08x %08x %08x %08x %08x\n", ebp, p[1], p[2], p[3], p[4], p[5], p[6]);
+		if(debuginfo_eip(p[1], &eip_info) == 0)
+		{
+			uint32_t offset = p[1] - eip_info.eip_fn_addr;
+			cprintf("\t\t%s:%d: %.*s+%d\n", eip_info.eip_file, eip_info.eip_line, eip_info.eip_fn_namelen,  eip_info.eip_fn_name, offset);
+		}
+		ebp = *p;
+	}
+	return 0;
+}
+```
+
+### 检测
+```shell
+$ make grade
+make clean
+make[1]: Entering directory '/home/liu/Desktop/6.828/lab'
+rm -rf obj .gdbinit jos.in qemu.log
+make[1]: Leaving directory '/home/liu/Desktop/6.828/lab'
+./grade-lab1
+make[1]: Entering directory '/home/liu/Desktop/6.828/lab'
++ as kern/entry.S
++ cc kern/entrypgdir.c
++ cc kern/init.c
++ cc kern/console.c
++ cc kern/monitor.c
++ cc kern/printf.c
++ cc kern/kdebug.c
++ cc lib/printfmt.c
++ cc lib/readline.c
++ cc lib/string.c
++ ld obj/kern/kernel
++ as boot/boot.S
++ cc -Os boot/main.c
++ ld boot/boot
+boot block is 380 bytes (max 510)
++ mk obj/kern/kernel.img
+make[1]: Leaving directory '/home/liu/Desktop/6.828/lab'
+running JOS: (1.1s)
+  printf: OK
+  backtrace count: OK
+  backtrace arguments: OK
+  backtrace symbols: OK
+  backtrace lines: OK
+Score: 50/50
+```
