@@ -28,7 +28,7 @@ kern/kclock.c
 ### 练习1. 在文件`kern/pmap.c`中，必须为以下函数实现代码（可能按给定的顺序）。
 ```
 boot_alloc()
-mem_init()（仅限于通话check_page_free_list(1)）
+mem_init()
 page_init()
 page_alloc()
 page_free()
@@ -36,3 +36,24 @@ page_free()
 `check_page_free_list()`和`check_page_alloc()`是用于测试的物理页面分配器。
 
 启动`JOS`并查看`check_page_alloc()`报告是否成功。修复代码，使其通过。添加自己的`assert()`有助于验证假设是否正确。
+
+
+#### 第一个难关：理解ROUNDUP
+`typeof`是`GNU C`标准中的一个扩展特性，类似于`C++11`中的`decltype`，就是自动推导表达式的数据类型
+
+`ROUNDUP`的作用就是计算传进来的字节数所需要的页面数
+```c
+// Rounding operations (efficient when n is a power of 2)
+// Round down to the nearest multiple of n
+#define ROUNDDOWN(a, n)						\
+({								\
+	uint32_t __a = (uint32_t) (a);				\
+	(typeof(a)) (__a - __a % (n));				\
+})
+// Round up to the nearest multiple of n
+#define ROUNDUP(a, n)						\
+({								\
+	uint32_t __n = (uint32_t) (n);				\
+	(typeof(a)) (ROUNDDOWN((uint32_t) (a) + __n - 1, __n));	\
+})
+```
