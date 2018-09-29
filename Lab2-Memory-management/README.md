@@ -57,3 +57,32 @@ page_free()
 	(typeof(a)) (ROUNDDOWN((uint32_t) (a) + __n - 1, __n));	\
 })
 ```
+
+#### 第二个难关：理解文件`kern/pmap.c`中各个函数的作用
++ `static void *boot_alloc(uint32_t n)`
+	+ 这个简单的物理内存分配器只有在JOS在设置它的虚拟内存系统时才被调用，即只会在初始化时、在`page_free_list`被设置前调用
+	+ `page_alloc()`才是真正的分配器
++ `void mem_init(void)`
+	+ 设置两层页表，这个函数只设置内核部分的地址空间(>= UTOP)，用户部分的地址空间将在之后设置
+	+ `UTOP`到`ULIM`：用户只能读不能写；`ULIM`之上用户不能读或写
++ `void page_init(void)`
+	+ 跟踪物理页面
+	+ 初始化页面结构和内存空闲链表
+	+ 这个函数完成后，`boot_alloc`不能再被调用
++ `struct PageInfo *page_alloc(int alloc_flags)`
+	+ 分配一个物理页面
++ `void page_free(struct PageInfo *pp)`
+	+ 释放一个页面到空闲链表
++ `void page_decref(struct PageInfo* pp)`
+	+ 减少对页面的引用，如果没有别的引用则释放页面
++ `pte_t *pgdir_walk(pde_t *pgdir, const void *va, int create)`
+	+ 返回二级页表地址
++ `static void boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)`
+	+ 映射[va, va+size]的虚拟地址空间到物理地址空间[pa, pa+size]
++ `int page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)`
+	+ 映射物理页面`pp`到虚拟地址`va`
++ `struct PageInfo *page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)`
+	+ 返回映射到虚拟内存`va`的页面
++ `void page_remove(pde_t *pgdir, void *va)`
+	+ 解除在虚拟地址`va`页面的映射
++ 
