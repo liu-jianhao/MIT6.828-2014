@@ -223,7 +223,12 @@ page_free(struct PageInfo *pp)
 
 ```
 
-#### 测试
+#### Part3：测试
+测试前要删除或注释掉`mem_init`函数中的一行。
+```c
+// Remove this line when you're ready to test this function.
+// panic("mem_init: This function is not finished\n");
+```
 现在能通过第一测试了。
 ```shell
 $ ./grade-lab2
@@ -231,7 +236,17 @@ running JOS: (0.4s)
   Physical page allocator: OK
 ```
 
-### 第二部分：虚拟内存
+## 第二部分：虚拟内存
+
+### 练习4. 在文件kern / pmap.c中，您必须实现以下函数的代码。
+```
+pgdir_walk（）
+boot_map_region（）
+page_lookup（）
+page_remove（）
+page_insert（）
+```
+check_page()，来自mem_init()是测试页表管理的例程。
 
 #### Part1：理解什么是两级页表
 + 内存分页管理的基本原理是将整个主内存区域划分成`4096`字节为一页的内存页面。
@@ -245,12 +260,151 @@ running JOS: (0.4s)
 + `void page_decref(struct PageInfo* pp)`
 	+ 减少对页面的引用，如果没有别的引用则释放页面
 + `pte_t *pgdir_walk(pde_t *pgdir, const void *va, int create)`
-	+ 返回二级页表地址
+	+ 返回页表项地址
+```c
+pte_t *
+pgdir_walk(pde_t *pgdir, const void *va, int create)
+{
+	// Fill this function in
+	size_t pdx = PDX(va);
+	size_t ptx = PTX(va);
+
+	// 如果对应的页面不存在
+	if(!pgdir[pdx])
+	{
+		if(create == false)
+			return NULL;
+		
+		struct PageInfo *page = page_alloc(ALLOC_ZERO);
+		if(page == NULL)
+			return NULL;
+		page->pp_ref++;
+
+		// 将页面的地址和属性信息存入页表
+		pgdir[pdx] = page2pa(page) | PTE_P | PTE_U | PTE_W;
+	}
+
+	// 页目录表
+	pte_t *pgtbl = (pte_t *)KADDR(PTE_ADDR(pgdir[pdx]));
+	// 返回页表项的地址
+	return &pgtbl[ptx];
+}
+```
 + `static void boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)`
 	+ 映射[va, va+size]的虚拟地址空间到物理地址空间[pa, pa+size]
+```c
+static void
+boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
+{
+	// Fill this function in
+	size_t i = 0;
+	for(; i < size; i += PGSIZE)
+	{
+		pte_t *pte = pgdir_walk(pgdir, (void *)(va + i), 1);
+		*pte = (pa + i) | perm | PTE_P;
+	}
+}
+
+```
 + `int page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)`
 	+ 映射物理页面`pp`到虚拟地址`va`
+```c
+int
+page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
+{
+	// Fill this function in
+	pte_t *pte = pgdir_walk(pgdir, va, 1);
+	if(pte == NULL)	
+		return -E_NO_MEM; // 空间不足
+
+	// 这里要提前增加引用计数，原因如下
+	// 如果该物理页ref = 1，经过page_remove后会被加入空闲页链表。
+	// 然而，在函数最后还需要增加其引用计数，导致page_free_list中出现了非空闲页。
+	pp->pp_ref++;
+	if(*pte & PTE_P)
+		page_remove(pgdir, va);
+	
+	*pte = page2pa(pp) | perm | PTE_P;
+	
+	return 0;
+}
+```
 + `struct PageInfo *page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)`
+	+ 作用是查找虚拟地址对应的物理页描述
 	+ 返回映射到虚拟内存`va`的页面
+```c
+struct PageInfo *
+page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
+{
+	// Fill this function in
+	pte_t *pte = pgdir_walk(pgdir, va, 1);
+
+	if(pte == NULL)
+		return NULL;
+
+	if(pte_store)
+		*pte_store = pte;  // 附加保存一个指向找到的页表的指针
+	
+	// PTE_ADDR这个宏的作用是将页表指针指向的内容转为物理地址
+	return pa2page(PTE_ADDR(*pte));
+}
+```
 + `void page_remove(pde_t *pgdir, void *va)`
 	+ 解除在虚拟地址`va`页面的映射
+```c
+void
+page_remove(pde_t *pgdir, void *va)
+{
+	// Fill this function in
+	pte_t *pte = NULL;
+	struct PageInfo *page = page_lookup(pgdir, va, &pte);
+	if(page == NULL)
+		return;
+
+	*pte = (pte_t)0;
+	tlb_invalidate(pgdir, va);
+	page_decref(page);
+}
+```
+
+#### Part3：测试
+现在能通过第二个测试`Page management`
+```shell
+$ ./grade-lab2
+running JOS: (0.4s)
+  Physical page allocator: OK
+  Page management: OK
+```
+
+## 第三部分：内核地址空间
+
+### 练习5.在mem_init()调用之后填写缺少的代码check_page()
+该练习中主要映射了三段虚拟地址到物理页上。
+1. UPAGES(0xef000000 ~ 0xef400000)最多4MB
+```c
+n = ROUNDUP(n, PGSIZE);
+boot_map_region(kern_pgdir, UPAGES, n, PADDR(pages), PTE_U | PTE_P);
+```
+
+2. 内核栈(0xefff8000 ~ 0xf0000000)32kB
+```c
+// bootstack表示的是栈地最低地址，由于栈向低地址生长，实际是栈顶
+boot_map_region(kern_pgdir, KSTACKTOP - KSTKSIZE, KSTKSIZE, PADDR(bootstack), PTE_W | PTE_P);
+```
+
+3. 内核 ( 0xf0000000 ~ 0xffffffff ) 256MB
+```c
+n = (uint32_t)(-1) - KERNBASE + 1;
+boot_map_region(kern_pgdir, KERNBASE, n, 0, PTE_W | PTE_P);
+```
+
+#### 测试
+```shell
+$ ./grade-lab2
+running JOS: (1.0s)
+  Physical page allocator: OK
+  Page management: OK
+  Kernel page directory: OK
+  Page management 2: OK
+Score: 70/70
+```
